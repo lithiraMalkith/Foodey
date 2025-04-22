@@ -1,0 +1,58 @@
+version: '3.8'
+services:
+  user-service:
+    build: ./user-service
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  order-service:
+    build: ./order-service
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_BASE_URL=http://localhost:3001
+      - REACT_APP_ORDER_API_URL=http://localhost:3002
+    depends_on:
+      - user-service
+      - order-service
+    networks:
+      - app-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+
+volumes:
+  mongo-data:
+
+networks:
+  app-network:
+    driver: bridge
