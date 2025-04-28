@@ -21,8 +21,80 @@ services:
       - PORT=3002
       - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
       - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      # Service URLs (use container names for Docker networking)
+      - USER_SERVICE_URL=http://user-service:3001
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3005
+      # Service tokens
+      - NOTIFICATION_SERVICE_TOKEN=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
     depends_on:
       - mongo
+      - user-service
+      - notification-service
+    networks:
+      - app-network
+
+  restaurant-service:
+    build: ./restaurant-service
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  delivery-service:
+    build: ./delivery-service
+    ports:
+      - "3004:3004"
+    environment:
+      - PORT=3004
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      # Service URLs (use container names for Docker networking)
+      - ORDER_SERVICE_URL=http://order-service:3002
+      - RESTAURANT_SERVICE_URL=http://restaurant-service:3003
+      - USER_SERVICE_URL=http://user-service:3001
+      - NOTIFICATION_SERVICE_URL=http://notification-service:3005
+      # Service tokens
+      - SERVICE_TOKEN=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      - NOTIFICATION_SERVICE_TOKEN=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+    depends_on:
+      - mongo
+      - order-service
+    networks:
+      - app-network
+
+  notification-service:
+    build: ./notification-service
+    ports:
+      - "3005:3005"
+    environment:
+      - PORT=3005
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      # Service tokens for authentication
+      - NOTIFICATION_SERVICE_TOKEN=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      # Email configuration
+      - EMAIL_USER=foodyservicelk@gmail.com
+      - EMAIL_PASS=ffamgvocrsczgvef
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  admin-service:
+    build: ./admin-service
+    ports:
+      - "3006:3006" 
+    environment:
+      - PORT=3006
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+    depends_on:
+       - mongo
     networks:
       - app-network
 
@@ -33,9 +105,17 @@ services:
     environment:
       - REACT_APP_API_BASE_URL=http://localhost:3001
       - REACT_APP_ORDER_API_URL=http://localhost:3002
+      - REACT_APP_RESTAURANT_API_URL=http://localhost:3003
+      - REACT_APP_DELIVERY_API_URL=http://localhost:3004
+      - REACT_APP_NOTIFICATION_API_URL=http://localhost:3005
+      - REACT_APP_ADMIN_API_URL=http://localhost:3006
     depends_on:
       - user-service
       - order-service
+      - restaurant-service
+      - delivery-service
+      - notification-service
+      - admin-service
     networks:
       - app-network
     extra_hosts:
