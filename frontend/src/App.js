@@ -16,6 +16,7 @@ import Profile from './pages/Profile';
 import DriverProfile from './pages/DriverProfile';
 import OrderAssignment from './pages/OrderAssignment';
 import DeliveryTracking from './pages/DeliveryTracking';
+import PaymentPage from './pages/PaymentPage';
 
 // Import delivery styles
 import './styles/delivery.css';
@@ -44,6 +45,9 @@ function App() {
           <Route path="/driver-profile" element={<DriverProfile />} />
           <Route path="/order-assignment" element={<OrderAssignment />} />
           <Route path="/track-delivery/:orderId" element={<DeliveryTracking />} />
+          
+          {/* Payment Route */}
+          <Route path="/payment/:orderId" element={<PaymentPage />} />
         </Routes>
       </div>
     </Router>

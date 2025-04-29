@@ -5,6 +5,7 @@ import { FaMotorcycle, FaMapMarkerAlt, FaUserAlt, FaSearch, FaCheckCircle, FaTim
 const OrderAssignment = () => {
   const [pendingOrders, setPendingOrders] = useState([]);
   const [availableDrivers, setAvailableDrivers] = useState([]);
+  const [allAvailableDrivers, setAllAvailableDrivers] = useState([]); 
   const [selectedCity, setSelectedCity] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -89,53 +90,132 @@ const OrderAssignment = () => {
     fetchAvailableDrivers();
   }, [selectedCity, token]);
   
+  // Load ALL available drivers regardless of location
+  useEffect(() => {
+    const fetchAllAvailableDrivers = async () => {
+      try {
+        const response = await axios.get(
+          `${process.env.REACT_APP_DELIVERY_API_URL}/api/drivers/available`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        
+        setAllAvailableDrivers(response.data);
+      } catch (error) {
+        console.error('Error loading all available drivers:', error);
+      }
+    };
+    
+    fetchAllAvailableDrivers();
+  }, [token]);
+  
   // Auto-assign a delivery
-  const autoAssignDelivery = async (orderId, orderAddress, restaurantName, restaurantId) => {
+  const autoAssignDelivery = async (orderId, orderAddress, restaurantName, restaurantId, paymentMethod, paymentStatus) => {
     try {
-      console.log('Auto-assigning delivery:', { orderId, orderAddress, restaurantName, restaurantId });
+      setError('');
+      console.log('Auto-assigning delivery:', { orderId, orderAddress, restaurantName, restaurantId, paymentMethod, paymentStatus });
+      
       const response = await axios.post(
         `${process.env.REACT_APP_DELIVERY_API_URL}/api/deliveries/auto-assign`,
         { 
           orderId, 
           orderAddress, 
           restaurantName, 
-          restaurantId 
+          restaurantId,
+          paymentMethod,
+          paymentStatus
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
-      // Handle both success and already assigned cases
+      // Process the response
       if (response.data.success) {
         // Remove the assigned order from the list
         setPendingOrders(prevOrders => prevOrders.filter(order => order._id !== orderId));
         
-        // Refresh the available drivers list
+        // Show success message
+        setSuccessMessage(`Order assigned to ${response.data.driverName || 'a driver'}`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+        
+        // Refresh available drivers
         await refreshAvailableDrivers();
         
-        // Check if this was already assigned
-        if (response.data.alreadyAssigned) {
-          setSuccessMessage(`Order ${orderId} was already assigned for delivery`);
-        } else {
-          setSuccessMessage(`Order ${orderId} assigned successfully`);
-        }
-        
+        return true;
+      } else if (response.data.alreadyAssigned) {
+        // Order was already assigned
+        setPendingOrders(prevOrders => prevOrders.filter(order => order._id !== orderId));
+        setSuccessMessage(`Order ${orderId.substring(0, 8)}... was already assigned`);
         setTimeout(() => setSuccessMessage(''), 3000);
         return true;
+      } else if (response.data.pendingAssignment) {
+        // No drivers available, but not an error
+        setError(`No drivers available for order ${orderId.substring(0, 8)}... (${response.data.error})`);
+        setTimeout(() => setError(''), 5000);
+        return false;
       }
+      
+      // Default case - some other error
+      setError(response.data.error || 'Failed to assign delivery');
+      setTimeout(() => setError(''), 5000);
       return false;
     } catch (error) {
       console.error('Auto-assign error:', error.response?.data || error.message);
+      setError(`Error: ${error.response?.data?.error || error.message}`);
+      setTimeout(() => setError(''), 5000);
+      return false;
+    }
+  };
+  
+  // Manually assign a delivery
+  const manuallyAssignDelivery = async (orderId, driverId, orderAddress, structuredAddress, restaurantName, paymentMethod, paymentStatus) => {
+    try {
+      setError('');
+      setSuccessMessage('Assigning delivery...');
       
-      // If the error is that the delivery is already assigned, handle it as a success
-      if (error.response?.data?.error === 'Delivery already assigned') {
+      // Use structured address if available
+      const addressToUse = structuredAddress || orderAddress;
+      
+      const response = await axios.post(
+        `${process.env.REACT_APP_DELIVERY_API_URL}/api/deliveries/assign`,
+        { 
+          orderId, 
+          driverId,
+          orderAddress: addressToUse,
+          restaurantName: restaurantName || '',
+          paymentMethod: paymentMethod || 'card',
+          paymentStatus: paymentStatus || 'pending'
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
+      // Process the response
+      if (response.data.success) {
+        // Remove the assigned order from the list
         setPendingOrders(prevOrders => prevOrders.filter(order => order._id !== orderId));
-        setSuccessMessage(`Order ${orderId} was already assigned for delivery`);
+        
+        // Show success message
+        setSuccessMessage(`Order assigned to ${response.data.driverName || 'selected driver'}`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+        
+        // Refresh available drivers
+        await refreshAvailableDrivers();
+        
+        return true;
+      } else if (response.data.alreadyAssigned) {
+        // Order was already assigned
+        setPendingOrders(prevOrders => prevOrders.filter(order => order._id !== orderId));
+        setSuccessMessage(`Order ${orderId.substring(0, 8)}... was already assigned`);
         setTimeout(() => setSuccessMessage(''), 3000);
         return true;
       }
       
-      setError(error.response?.data?.error || 'Error auto-assigning delivery');
-      setTimeout(() => setError(null), 3000);
+      // Default case - some other error
+      setError(response.data.error || 'Failed to assign delivery');
+      setTimeout(() => setError(''), 5000);
+      return false;
+    } catch (error) {
+      console.error('Manual assign error:', error.response?.data || error.message);
+      setError(`Error: ${error.response?.data?.error || error.message}`);
+      setTimeout(() => setError(''), 5000);
       return false;
     }
   };
@@ -155,19 +235,27 @@ const OrderAssignment = () => {
       return;
     }
     
-    // Try to assign each unassigned order
+    // Set a flag to prevent duplicate assignments
+    setLoading(true);
+    
+    // Try to assign each unassigned order one at a time
     for (const order of unassignedOrders) {
       if (order.deliveryAddress) {
+        // Use structured address if available, otherwise use string address
+        const addressToUse = order.structuredAddress || order.deliveryAddress;
+        
         // Pass restaurant information along with order ID and address
         const success = await autoAssignDelivery(
           order._id, 
-          order.deliveryAddress,
+          addressToUse,
           order.restaurantName || '', // Pass restaurant name if available
-          order.restaurantId || ''    // Pass restaurant ID if available
+          order.restaurantId || '',    // Pass restaurant ID if available
+          order.paymentMethod || '', // Pass payment method if available
+          order.paymentStatus || '' // Pass payment status if available
         );
         if (success) assignedCount++;
-        // Add a small delay to prevent overwhelming the server
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Add a small delay to prevent overwhelming the server and reduce race conditions
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
     
@@ -178,6 +266,8 @@ const OrderAssignment = () => {
       setSuccessMessage(`Auto-assigned ${assignedCount} orders`);
       setTimeout(() => setSuccessMessage(''), 3000);
     }
+    
+    setLoading(false);
   };
   
   // Filter orders to only include those without assigned deliveries
@@ -199,43 +289,24 @@ const OrderAssignment = () => {
     }
   };
   
-  // Manually assign a delivery
-  const manuallyAssignDelivery = async (orderId, driverId, orderAddress) => {
-    try {
-      const response = await axios.post(
-        `${process.env.REACT_APP_DELIVERY_API_URL}/api/deliveries/assign`,
-        { orderId, driverId, deliveryAddress: orderAddress },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      
-      if (response.data) {
-        setSuccessMessage('Order manually assigned successfully');
-        
-        // Remove the assigned order from the list
-        setPendingOrders(pendingOrders.filter(order => order._id !== orderId));
-        
-        // Refresh the available drivers list
-        refreshAvailableDrivers();
-        
-        setTimeout(() => setSuccessMessage(''), 3000);
-      }
-    } catch (error) {
-      setError(error.response?.data?.error || 'Error manually assigning delivery');
-      setTimeout(() => setError(null), 3000);
-    }
-  };
-  
   // Function to refresh available drivers
   const refreshAvailableDrivers = async () => {
-    if (!selectedCity) return;
-    
     try {
-      const response = await axios.get(
-        `${process.env.REACT_APP_DELIVERY_API_URL}/api/drivers/available?city=${selectedCity}`,
+      // Refresh city-specific drivers
+      if (selectedCity) {
+        const response = await axios.get(
+          `${process.env.REACT_APP_DELIVERY_API_URL}/api/drivers/available?city=${selectedCity}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        setAvailableDrivers(response.data);
+      }
+      
+      // Refresh all available drivers
+      const allResponse = await axios.get(
+        `${process.env.REACT_APP_DELIVERY_API_URL}/api/drivers/available`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      
-      setAvailableDrivers(response.data);
+      setAllAvailableDrivers(allResponse.data);
     } catch (error) {
       console.error('Error refreshing available drivers:', error);
     }
@@ -424,15 +495,15 @@ const OrderAssignment = () => {
                           <select 
                             onChange={(e) => {
                               if (e.target.value) {
-                                manuallyAssignDelivery(order._id, e.target.value, order.deliveryAddress);
+                                manuallyAssignDelivery(order._id, e.target.value, order.deliveryAddress, order.structuredAddress, order.restaurantName, order.paymentMethod, order.paymentStatus);
                               }
                             }}
                             className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200 focus:ring-opacity-50 py-2 px-3 text-sm"
                           >
                             <option value="">Manually Assign Driver</option>
-                            {availableDrivers.map(driver => (
+                            {allAvailableDrivers.map(driver => (
                               <option key={driver.userId} value={driver.userId}>
-                                {driver.name} ({driver.activeDeliveries} active)
+                                {driver.name} ({driver.activeDeliveries} active) - {driver.currentLocation?.city || 'Unknown location'}
                               </option>
                             ))}
                           </select>

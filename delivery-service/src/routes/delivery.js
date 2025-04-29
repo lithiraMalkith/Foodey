@@ -4,208 +4,265 @@ const Delivery = require('../models/delivery');
 const Driver = require('../models/driver');
 const auth = require('../middleware/auth');
 const axios = require('axios');
-const { autoAssignDriver, extractCity } = require('../utils/assignmentService');
+const jwt = require('jsonwebtoken'); // Import jwt
+const { extractCity } = require('../utils/assignmentService');
 
 // Auto-assign delivery based on city matching
 router.post('/auto-assign', auth(['admin']), async (req, res) => {
   try {
-    console.log('Auto-assign request received:', req.body);
-    const { orderId, orderAddress, restaurantName, restaurantId } = req.body;
+    const { orderId, orderAddress, restaurantName, restaurantId, paymentMethod, paymentStatus } = req.body;
     
     if (!orderId || !orderAddress) {
-      console.log('Missing required fields:', { orderId, orderAddress });
       return res.status(400).json({ error: 'Order ID and delivery address are required' });
     }
-    
-    // Log restaurant information if provided
-    if (restaurantName) {
-      console.log(`Restaurant name provided in request: ${restaurantName}`);
-    }
-    if (restaurantId) {
-      console.log(`Restaurant ID provided in request: ${restaurantId}`);
-    }
-    
-    // First check if delivery already exists for this order using a robust query
+
+    // Check if delivery already exists - use findOne with a try/catch to handle race conditions
     try {
       const existingDelivery = await Delivery.findOne({ orderId });
       if (existingDelivery) {
-        console.log(`Delivery already exists for order: ${orderId}`);
-        
-        // Instead of returning an error, return the existing delivery with a message
         return res.status(200).json({
+          success: true,
           message: 'Delivery already assigned',
           delivery: existingDelivery,
-          success: true,
           alreadyAssigned: true
         });
       }
     } catch (findError) {
-      console.error(`Error checking for existing delivery for order ${orderId}:`, findError);
-      // Continue with the assignment attempt even if the check fails
+      console.error('Error checking for existing delivery:', findError);
     }
+
+    // Find available drivers
+    let city;
     
-    console.log('Order address type:', typeof orderAddress);
+    // For structured address, always use the city field directly
+    if (typeof orderAddress === 'object' && orderAddress.city) {
+      city = orderAddress.city;
+      console.log(`Using city from structured address: ${city}`);
+    } else {
+      // For string address, extract city
+      city = extractCity(orderAddress);
+      console.log(`Extracted city from string address: ${city}`);
+    }
+
+    if (!city) {
+      return res.status(200).json({
+        success: false,
+        error: 'Could not determine city from address',
+        pendingAssignment: true,
+        orderId
+      });
+    }
+
+    console.log(`Searching for drivers in city: ${city}`);
+
+    // Find available drivers in the city - simple city matching
+    const drivers = await Driver.find({
+      status: 'available',
+      activeDeliveries: { $lt: 1 },
+      'currentLocation.city': { $regex: new RegExp(city, 'i') } // Case-insensitive match
+    }).sort({ activeDeliveries: 1 });
+
+    if (drivers.length === 0) {
+      return res.status(200).json({
+        success: false,
+        error: `No available drivers found in ${city}`,
+        pendingAssignment: true,
+        orderId
+      });
+    }
+
+    // Select the driver with fewest active deliveries
+    const driver = drivers[0];
+
+    // Format the address as a string if it's an object
+    let deliveryAddressString = orderAddress;
+    let structuredAddressObj = null;
+
     if (typeof orderAddress === 'object') {
-      console.log('Using structured address object with city:', orderAddress.city);
+      structuredAddressObj = orderAddress;
+      deliveryAddressString = `${orderAddress.street || ''}, ${orderAddress.city || ''}, ${orderAddress.state || ''}, ${orderAddress.zipCode || ''}`;
     }
-    
-    let addressToUse = orderAddress;
-    
-    if (typeof orderAddress === 'string') {
-      try {
-        // Create proper authorization header for service-to-service communication
-        let token = req.headers.authorization;
-        if (!token || token === 'undefined' || token === 'null') {
-          token = `Bearer ${process.env.JWT_SECRET}`;
+
+    // Create a new delivery
+    let delivery;
+    try {
+      delivery = new Delivery({
+        orderId,
+        driverId: driver.userId,
+        restaurantName: restaurantName || 'Unknown Restaurant',
+        deliveryAddress: deliveryAddressString,
+        structuredAddress: structuredAddressObj,
+        paymentMethod: paymentMethod || 'card',
+        paymentStatus: paymentStatus || 'pending',
+        notificationSent: false
+      });
+      
+      await delivery.save();
+    } catch (saveError) {
+      // Check if this is a duplicate key error (orderId already exists)
+      if (saveError.code === 11000 && saveError.keyPattern && saveError.keyPattern.orderId) {
+        // Try to fetch the existing delivery
+        const existingDelivery = await Delivery.findOne({ orderId });
+        if (existingDelivery) {
+          return res.status(200).json({
+            success: true,
+            message: 'Delivery already assigned (detected during save)',
+            delivery: existingDelivery,
+            alreadyAssigned: true
+          });
         }
-        
-        // Fetch the order to get the structured address
-        const orderResponse = await axios.get(
-          `${process.env.ORDER_SERVICE_URL || 'http://order-service:3002'}/api/orders/${orderId}`,
-          { headers: { Authorization: token } }
-        );
-        
-        // Use structured address if available
-        if (orderResponse.data && orderResponse.data.structuredAddress && orderResponse.data.structuredAddress.city) {
-          addressToUse = orderResponse.data.structuredAddress;
-          console.log('Using structured address from order service:', addressToUse);
-        }
-      } catch (error) {
-        console.error('Error fetching order details:', error.message);
-        // Continue with the string address if we can't fetch the structured address
       }
+      
+      // For other errors, return a failure response
+      console.error('Error saving delivery:', saveError);
+      return res.status(500).json({ error: 'Failed to create delivery assignment' });
     }
-    
-    // Assign driver using the best available address information and restaurant info if provided
-    const result = await autoAssignDriver(orderId, addressToUse, restaurantName, restaurantId);
-    
-    if (!result.success) {
-      return res.status(400).json({ error: result.message });
+
+    // Update driver status
+    driver.activeDeliveries += 1;
+    if (driver.activeDeliveries >= driver.maxConcurrentDeliveries) {
+      driver.status = 'busy';
     }
-    
+    await driver.save();
+
     // Update order service to mark delivery as assigned
     try {
-      const token = req.headers.authorization;
-      // Call the assign-delivery endpoint instead of status endpoint
+      // Create an admin token for service-to-service communication
+      const adminToken = jwt.sign(
+        { userId: 'service', role: 'admin' },
+        process.env.JWT_SECRET,
+        { expiresIn: '1h' }
+      );
+      
       await axios.put(
         `${process.env.ORDER_SERVICE_URL}/api/orders/${orderId}/assign-delivery`,
-        {}, // No need to pass additional data as the endpoint handles setting deliveryAssigned=true
-        { headers: { Authorization: token } }
+        {}, 
+        { headers: { Authorization: `Bearer ${adminToken}` } }
       );
-      console.log(`Successfully marked order ${orderId} as assigned for delivery`);
-    } catch (notifyError) {
-      console.error('Error updating order delivery status:', notifyError);
-      // Continue even if notification fails
+    } catch (error) {
+      console.error('Error updating order delivery status:', error);
     }
-    
-    res.status(201).json(result);
+
+    return res.status(201).json({
+      success: true,
+      delivery,
+      driverName: driver.name,
+      driverCity: driver.currentLocation.city
+    });
   } catch (error) {
     console.error('Error auto-assigning delivery:', error);
-    res.status(500).json({ error: 'Server error' });
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
 // Manually assign delivery (Admin action)
 router.post('/assign', auth(['admin']), async (req, res) => {
   try {
-    const { orderId, driverId } = req.body;
+    const { orderId, driverId, orderAddress, restaurantName, paymentMethod, paymentStatus } = req.body;
+    
     if (!orderId || !driverId) {
       return res.status(400).json({ error: 'Order ID and Driver ID required' });
     }
 
-    // Fetch the order to get the delivery address and restaurant name - simplified approach
-    let deliveryAddress = null;
-    let restaurantName = '';
-    let structuredAddress = null;
-    
+    // Check if delivery already exists - use findOne with a try/catch to handle race conditions
     try {
-      console.log(`Fetching order details for order ID: ${orderId}`);
-      
-      // Create proper authorization header for service-to-service communication
-      // Use JWT_SECRET directly for reliable service-to-service communication
-      const token = `Bearer ${process.env.JWT_SECRET}`;
-      
-      console.log('Using authorization header:', token.substring(0, 15) + '...');
-      console.log('Calling order service URL:', process.env.ORDER_SERVICE_URL || 'http://order-service:3002');
-      
-      // The enhanced order endpoint now handles restaurant name retrieval internally
-      const orderResponse = await axios.get(
-        `${process.env.ORDER_SERVICE_URL || 'http://order-service:3002'}/api/orders/${orderId}`,
-        { headers: { Authorization: token } }
-      );
-      
-      console.log('Order response status:', orderResponse.status);
-      
-      // Get the delivery address and restaurant name from the order
-      if (orderResponse.data) {
-        // Get delivery address
-        if (orderResponse.data.deliveryAddress) {
-          deliveryAddress = orderResponse.data.deliveryAddress;
-          console.log(`Found delivery address: ${deliveryAddress}`);
-        }
-        
-        // Get structured address
-        if (orderResponse.data.structuredAddress) {
-          structuredAddress = orderResponse.data.structuredAddress;
-          console.log(`Found structured address with city: ${structuredAddress.city || 'N/A'}`);
-        }
-        
-        // Get restaurant name - the enhanced order endpoint ensures this is available
-        if (orderResponse.data.restaurantName) {
-          restaurantName = orderResponse.data.restaurantName;
-          console.log(`Using restaurant name from order: ${restaurantName}`);
-        } else {
-          console.warn('Order data received but missing restaurant name');
-        }
+      const existingDelivery = await Delivery.findOne({ orderId });
+      if (existingDelivery) {
+        return res.status(200).json({
+          success: true,
+          message: 'Delivery already assigned',
+          delivery: existingDelivery,
+          alreadyAssigned: true
+        });
       }
-    } catch (orderFetchError) {
-      console.error('Failed to fetch order details:', orderFetchError.message);
-      if (orderFetchError.response) {
-        console.error('Order service response:', orderFetchError.response.status, orderFetchError.response.data);
-      }
-      // Continue even if we can't fetch the order, but log the error
+    } catch (findError) {
+      console.error('Error checking for existing delivery:', findError);
     }
 
-    // Create the delivery assignment with the address and restaurant name if available
-    const delivery = new Delivery({ 
-      orderId, 
-      driverId,
-      restaurantName: restaurantName || 'Unknown Restaurant', // Provide a fallback value if restaurant name is empty
-      deliveryAddress,
-      structuredAddress
-    });
-    
-    console.log('Creating delivery with restaurant name:', restaurantName || 'Unknown Restaurant');
-    await delivery.save();
-    
-    // Update the order status via the order service to set deliveryAssigned=true
+    // Get driver
+    const driver = await Driver.findOne({ userId: driverId });
+    if (!driver) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+
+    // Format the address as a string if it's an object
+    let deliveryAddressString = orderAddress;
+    let structuredAddressObj = null;
+
+    if (typeof orderAddress === 'object') {
+      structuredAddressObj = orderAddress;
+      deliveryAddressString = `${orderAddress.street || ''}, ${orderAddress.city || ''}, ${orderAddress.state || ''}, ${orderAddress.zipCode || ''}`;
+    }
+
+    // Create a new delivery
+    let delivery;
     try {
-      const token = req.headers.authorization;
-      const orderUpdateResponse = await axios.put(
-        `${process.env.ORDER_SERVICE_URL}/api/orders/${orderId}/assign-delivery`,
-        {},
-        { headers: { Authorization: token } }
+      delivery = new Delivery({
+        orderId,
+        driverId: driver.userId,
+        restaurantName: restaurantName || 'Unknown Restaurant',
+        deliveryAddress: deliveryAddressString || '',
+        structuredAddress: structuredAddressObj,
+        paymentMethod: paymentMethod || 'card',
+        paymentStatus: paymentStatus || 'pending',
+        notificationSent: false
+      });
+      
+      await delivery.save();
+    } catch (saveError) {
+      // Check if this is a duplicate key error (orderId already exists)
+      if (saveError.code === 11000 && saveError.keyPattern && saveError.keyPattern.orderId) {
+        // Try to fetch the existing delivery
+        const existingDelivery = await Delivery.findOne({ orderId });
+        if (existingDelivery) {
+          return res.status(200).json({
+            success: true,
+            message: 'Delivery already assigned (detected during save)',
+            delivery: existingDelivery,
+            alreadyAssigned: true
+          });
+        }
+      }
+      
+      // For other errors, return a failure response
+      console.error('Error saving delivery:', saveError);
+      return res.status(500).json({ error: 'Failed to create delivery assignment' });
+    }
+
+    // Update driver status
+    driver.activeDeliveries += 1;
+    if (driver.activeDeliveries >= driver.maxConcurrentDeliveries) {
+      driver.status = 'busy';
+    }
+    await driver.save();
+
+    // Update order service to mark delivery as assigned
+    try {
+      // Create an admin token for service-to-service communication
+      const adminToken = jwt.sign(
+        { userId: 'service', role: 'admin' },
+        process.env.JWT_SECRET,
+        { expiresIn: '1h' }
       );
       
-      console.log(`Successfully marked order ${orderId} as assigned for delivery`);
-      
-      // Verify the response to ensure the update was successful
-      if (orderUpdateResponse.data && orderUpdateResponse.data.deliveryAssigned) {
-        console.log(`Order ${orderId} deliveryAssigned flag confirmed as true`);
-      } else {
-        console.warn(`Order ${orderId} was updated but deliveryAssigned flag status is unclear`);
-      }
-    } catch (orderError) {
-      console.error('Failed to update order delivery status:', orderError.message);
-      if (orderError.response) {
-        console.error('Error response:', orderError.response.status, orderError.response.data);
-      }
-      // Continue even if order update fails, but log the error
+      await axios.put(
+        `${process.env.ORDER_SERVICE_URL}/api/orders/${orderId}/assign-delivery`,
+        {}, 
+        { headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+    } catch (error) {
+      console.error('Error updating order delivery status:', error);
     }
-    
-    res.status(201).json(delivery);
+
+    return res.status(201).json({
+      success: true,
+      delivery,
+      driverName: driver.name,
+      driverCity: driver.currentLocation.city
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error manually assigning delivery:', error);
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -230,36 +287,58 @@ router.put('/:id/status', auth(['delivery_personnel']), async (req, res) => {
     // If the order is marked as delivered, send a delivery completion notification
     if (status === 'delivered') {
       try {
-        // Get the order details to find the customer email
-        const token = req.headers.authorization;
-        const orderResponse = await axios.get(
-          `${process.env.ORDER_SERVICE_URL}/api/orders/${delivery.orderId}`,
-          { headers: { Authorization: token } }
-        );
-        
-        if (orderResponse.data && orderResponse.data.userId) {
-          // Get the customer's email from the user service
-          const userResponse = await axios.get(
-            `${process.env.USER_SERVICE_URL || 'http://user-service:3001'}/api/users/${orderResponse.data.userId}/email`,
+        // Add a flag to the delivery to track if notification was sent
+        if (delivery.notificationSent) {
+          console.log(`Notification already sent for delivery ${id}, skipping`);
+        } else {
+          // Get the order details to find the customer email
+          const token = req.headers.authorization;
+          const orderResponse = await axios.get(
+            `${process.env.ORDER_SERVICE_URL}/api/orders/${delivery.orderId}`,
             { headers: { Authorization: token } }
           );
           
-          if (userResponse.data && userResponse.data.email) {
-            // Send delivery completion notification
-            await axios.post(
-              `${process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:3005'}/api/notifications/customer/delivery-complete`,
-              {
-                orderId: delivery.orderId,
-                customerEmail: userResponse.data.email,
-                deliveryDetails: {
-                  deliveryPerson: req.user.name || 'Delivery Personnel',
-                  completedAt: new Date().toISOString(),
-                  deliveryAddress: delivery.deliveryAddress
-                }
-              },
+          if (orderResponse.data && orderResponse.data.userId) {
+            // Get the customer's email from the user service
+            const userResponse = await axios.get(
+              `${process.env.USER_SERVICE_URL || 'http://user-service:3001'}/api/users/${orderResponse.data.userId}/email`,
               { headers: { Authorization: token } }
             );
-            console.log(`Delivery completion notification sent for order ${delivery.orderId}`);
+            
+            if (userResponse.data && userResponse.data.email) {
+              // Send delivery completion notification
+              await axios.post(
+                `${process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:3005'}/api/notifications/customer/delivery-complete`,
+                {
+                  orderId: delivery.orderId,
+                  customerEmail: userResponse.data.email,
+                  deliveryDetails: {
+                    deliveryPerson: req.user.name || 'Delivery Personnel',
+                    completedAt: new Date().toISOString(),
+                    deliveryAddress: delivery.deliveryAddress
+                  }
+                },
+                { headers: { Authorization: token } }
+              );
+              console.log(`Delivery completion notification sent for order ${delivery.orderId}`);
+              
+              // Mark notification as sent
+              delivery.notificationSent = true;
+              await delivery.save();
+              
+              // Also update the order service to let it know a notification was sent
+              try {
+                await axios.put(
+                  `${process.env.ORDER_SERVICE_URL}/api/orders/${delivery.orderId}/update-notification-status`,
+                  { notificationSent: true },
+                  { headers: { Authorization: token } }
+                );
+                console.log(`Updated order service that notification was sent for order ${delivery.orderId}`);
+              } catch (orderUpdateError) {
+                console.error(`Failed to update order service about notification status: ${orderUpdateError.message}`);
+                // Continue even if this update fails
+              }
+            }
           }
         }
       } catch (notificationError) {
@@ -315,6 +394,37 @@ router.get('/:orderId/track', auth(['customer']), async (req, res) => {
     res.json({ orderId, status: delivery.status, location: delivery.location });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update notification status (Service-to-service communication)
+router.put('/:orderId/notification-sent', auth(['admin', 'service']), async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { notificationSent } = req.body;
+    
+    if (notificationSent === undefined) {
+      return res.status(400).json({ error: 'notificationSent field is required' });
+    }
+    
+    const delivery = await Delivery.findOne({ orderId });
+    if (!delivery) {
+      return res.status(404).json({ error: 'Delivery not found' });
+    }
+    
+    // Update the delivery with notification status
+    delivery.notificationSent = notificationSent;
+    await delivery.save();
+    
+    console.log(`Delivery for order ${orderId} notification status updated to: ${notificationSent}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Delivery notification status updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating delivery notification status:', error);
+    res.status(500).json({ error: 'Server error', message: error.message });
   }
 });
 

@@ -87,6 +87,20 @@ router.get('/profile', auth(['customer', 'restaurant_admin', 'delivery_personnel
   }
 });
 
+// Get current user profile (Me endpoint)
+router.get('/me', auth(['customer', 'restaurant_admin', 'delivery_personnel', 'admin']), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching current user profile:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Add address
 router.post('/address', auth(['customer']), async (req, res) => {
   try {
@@ -166,7 +180,7 @@ router.put('/address/:addressId', auth(['customer']), async (req, res) => {
 });
 
 // Get user's default address
-router.get('/:userId/address', auth(['admin']), async (req, res) => {
+router.get('/:userId/address', auth(['admin', 'customer']), async (req, res) => {
   try {
     const { userId } = req.params;
     

@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order
+  template:
+    metadata:
+      labels:
+        app: order
+    spec:
+      containers:
+        - name: order
+          image: order-service:1.0
+          ports:
+            - containerPort: 3002
+          env:
+            - name: PORT
+              value: "3002"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: mongo-uri
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+            - name: USER_SERVICE_URL
+              value: "http://192.168.49.2:30001"
+            - name: NOTIFICATION_SERVICE_URL
+              value: "http://192.168.49.2:30005"
+            - name: PAYMENT_SERVICE_URL
+              value: "http://192.168.49.2:30007"
+            - name: RESTAURANT_SERVICE_URL
+              value: "http://192.168.49.2:30003"
+            - name: NOTIFICATION_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+spec:
+  selector:
+    app: order
+  ports:
+    - protocol: TCP
+      port: 3002
+      targetPort: 3002
+      nodePort: 30002
+  type: NodePort

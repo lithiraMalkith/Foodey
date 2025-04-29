@@ -134,7 +134,7 @@ router.post('/driver/assignment', auth(['admin']), async (req, res) => {
 });
 
 // Frontend API: Send order confirmation notification
-router.post('/frontend/order-confirmation', auth(['admin']), async (req, res) => {
+router.post('/frontend/order-confirmation', auth(['admin', 'customer']), async (req, res) => {
   try {
     console.log('Received frontend order confirmation notification request:', JSON.stringify(req.body));
     console.log('Auth user:', req.user);

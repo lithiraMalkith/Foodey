@@ -5,6 +5,7 @@ import { FaTruck, FaMapMarkerAlt, FaBox, FaCheckCircle, FaExclamationTriangle, F
 const DeliveryPersonnel = () => {
   const [deliveries, setDeliveries] = useState([]);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
     const fetchDeliveries = async () => {
@@ -51,52 +52,12 @@ const DeliveryPersonnel = () => {
         }
       }
       
-      // If the status is 'delivered', send a delivery success notification
-      if (status === 'delivered') {
-        try {
-          // Get the delivery details
-          const delivery = res.data;
-          
-          // Get the order details to find the customer email
-          const orderResponse = await axios.get(
-            `${process.env.REACT_APP_ORDER_API_URL}/api/orders/${delivery.orderId}`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          
-          if (orderResponse.data && orderResponse.data.userId) {
-            // Get the customer's email
-            const userResponse = await axios.get(
-              `${process.env.REACT_APP_API_BASE_URL}/api/users/${orderResponse.data.userId}/email`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-            
-            if (userResponse.data && userResponse.data.email) {
-              const customerEmail = userResponse.data.email;
-              
-              // Send delivery success notification
-              const notificationResponse = await axios.post(
-                `${process.env.REACT_APP_NOTIFICATION_API_URL}/api/notifications/frontend/delivery-success`,
-                {
-                  orderId: delivery.orderId,
-                  customerEmail,
-                  deliveryDetails: {
-                    deliveryAddress: delivery.deliveryAddress,
-                    location: location
-                  }
-                },
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              
-              console.log('Delivery success notification sent:', notificationResponse.data);
-            }
-          }
-        } catch (notificationError) {
-          console.error('Failed to send delivery success notification:', notificationError);
-          // Continue even if notification fails
-        }
-      }
+      // Success message
+      setSuccess(`Delivery status updated to ${status}`);
+      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to update delivery');
+      setError(err.response?.data?.error || 'Failed to update status');
+      setTimeout(() => setError(''), 3000);
     }
   };
 
@@ -125,6 +86,15 @@ const DeliveryPersonnel = () => {
         </div>
       )}
       
+      {success && (
+        <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-6 rounded-md shadow-sm">
+          <div className="flex items-center">
+            <FaCheckCircle className="text-green-500 mr-3 flex-shrink-0" />
+            <p className="font-medium">{success}</p>
+          </div>
+        </div>
+      )}
+      
       {deliveries.length === 0 ? (
         <div className="bg-gray-50 p-8 rounded-lg text-center border border-gray-200">
           <FaTruck className="text-gray-400 text-4xl mx-auto mb-3 opacity-50" />
@@ -147,7 +117,36 @@ const DeliveryPersonnel = () => {
                     <h4 className="font-medium">Order #{delivery.orderId.substring(delivery.orderId.length - 6)}</h4>
                   </div>
                   <span className="text-xs px-2 py-1 rounded-full font-medium bg-white/20">
-                    {delivery.status === 'delivered' ? 'Delivered' : delivery.status === 'picked_up' ? 'In Transit' : 'Pending Pickup'}
+                    {delivery.status.replace('_', ' ').toUpperCase()}
+                  </span>
+                </div>
+                
+                {/* Payment information badges */}
+                <div className="flex mt-2 space-x-2">
+                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                    delivery.paymentMethod === 'card' 
+                      ? 'bg-purple-700/60' 
+                      : 'bg-green-700/60'
+                  }`}>
+                    {delivery.paymentMethod === 'card' ? '💳 Card' : '💵 Cash on Delivery'}
+                  </span>
+                  
+                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                    delivery.paymentStatus === 'completed' 
+                      ? 'bg-green-700/60' 
+                      : delivery.paymentStatus === 'pending' 
+                        ? 'bg-yellow-700/60' 
+                        : delivery.paymentStatus === 'failed' 
+                          ? 'bg-red-700/60' 
+                          : 'bg-gray-700/60'
+                  }`}>
+                    {delivery.paymentStatus === 'completed' 
+                      ? '✅ Paid' 
+                      : delivery.paymentStatus === 'pending' 
+                        ? '⏳ Payment Pending' 
+                        : delivery.paymentStatus === 'failed' 
+                          ? '❌ Payment Failed' 
+                          : '↩️ Refunded'}
                   </span>
                 </div>
               </div>

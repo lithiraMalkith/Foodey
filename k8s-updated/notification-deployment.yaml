@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification
+  template:
+    metadata:
+      labels:
+        app: notification
+    spec:
+      containers:
+        - name: notification
+          image: notification-service:1.0
+          ports:
+            - containerPort: 3005
+          env:
+            - name: PORT
+              value: "3005"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+            - name: NOTIFICATION_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+            - name: EMAIL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: email-secret
+                  key: email-user
+            - name: EMAIL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: email-secret
+                  key: email-pass
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  selector:
+    app: notification
+  ports:
+    - protocol: TCP
+      port: 3005
+      targetPort: 3005
+      nodePort: 30005
+  type: NodePort

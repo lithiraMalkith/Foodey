@@ -76,7 +76,7 @@ const DeliveryAssignment = () => {
 
   return (
     <div className="container mx-auto p-4">
-      <h2 className="text-2xl font-bold mb-4 text-gray-800">Delivery Assignment only For Longdue Orders</h2>
+      <h2 className="text-2xl font-bold mb-4 text-gray-800">Deliveries</h2>
       
       {error && (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-md shadow-sm flex items-center">
@@ -94,10 +94,10 @@ const DeliveryAssignment = () => {
       
       <div className="mb-8">
         <div className="flex items-center mb-4 border-b pb-3">
-          <FaBoxOpen className="text-blue-600 text-xl mr-2" />
-          <h3 className="text-xl font-bold text-gray-800">Assign Deliveries</h3>
+          <h3 className="text-xl font-bold text-gray-800"></h3>
         </div>
         
+        {/* Commented out the Assign Deliveries section as requested
         {orders.length === 0 ? (
           <div className="bg-gray-50 p-8 rounded-lg text-center">
             <FaExclamationTriangle className="text-yellow-500 text-4xl mx-auto mb-3" />
@@ -159,6 +159,7 @@ const DeliveryAssignment = () => {
             ))}
           </div>
         )}
+        */}
       </div>
       
       <div>
@@ -184,6 +185,35 @@ const DeliveryAssignment = () => {
                     </div>
                     <span className={`text-xs px-2 py-1 rounded-full font-medium ${delivery.status === 'delivered' ? 'bg-green-700' : delivery.status === 'picked_up' ? 'bg-blue-700' : 'bg-yellow-700'}`}>
                       {delivery.status.replace('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+                  
+                  {/* Payment information badges */}
+                  <div className="flex mt-2 space-x-2">
+                    <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                      delivery.paymentMethod === 'card' 
+                        ? 'bg-purple-700/60' 
+                        : 'bg-green-700/60'
+                    }`}>
+                      {delivery.paymentMethod === 'card' ? '💳 Card' : '💵 Cash on Delivery'}
+                    </span>
+                    
+                    <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                      delivery.paymentStatus === 'completed' 
+                        ? 'bg-green-700/60' 
+                        : delivery.paymentStatus === 'pending' 
+                          ? 'bg-yellow-700/60' 
+                          : delivery.paymentStatus === 'failed' 
+                            ? 'bg-red-700/60' 
+                            : 'bg-gray-700/60'
+                    }`}>
+                      {delivery.paymentStatus === 'completed' 
+                        ? '✅ Paid' 
+                        : delivery.paymentStatus === 'pending' 
+                          ? '⏳ Payment Pending' 
+                          : delivery.paymentStatus === 'failed' 
+                            ? '❌ Payment Failed' 
+                            : '↩️ Refunded'}
                     </span>
                   </div>
                 </div>

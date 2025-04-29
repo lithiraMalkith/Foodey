@@ -98,13 +98,13 @@ exports.sendOrderDeliveryEmail = async (email, orderId, deliveryDetails = {}) =>
             <p>Dear Customer,</p>
             <p>
               ${isDeliveryComplete 
-                ? `We're happy to inform you that your order #<strong>${orderId}</strong> has been successfully delivered.` 
+                ? `We're happy to inform you that your order has been successfully delivered.` 
                 : `Great news! Your order #<strong>${orderId}</strong> is now out for delivery.`}
             </p>
             ${deliveryDetails.deliveryPerson ? `
             <div style="margin: 20px 0; padding: 15px; background-color: #f9f9f9; border-radius: 5px;">
               <h3 style="margin-top: 0;">${isDeliveryComplete ? 'Delivery Information:' : 'Delivery Details:'}</h3>
-              <p><strong>Delivery Person:</strong> ${deliveryDetails.deliveryPerson}</p>
+              <p><strong>Order ID :</strong> ${orderId}</p>
               ${!isDeliveryComplete && deliveryDetails.eta ? `<p><strong>Estimated Time of Arrival:</strong> ${deliveryDetails.eta}</p>` : ''}
               ${deliveryDetails.phoneNumber ? `<p><strong>Contact:</strong> ${deliveryDetails.phoneNumber}</p>` : ''}
               ${isDeliveryComplete && deliveryDetails.completedAt ? `<p><strong>Delivered at:</strong> ${new Date(deliveryDetails.completedAt).toLocaleString()}</p>` : ''}

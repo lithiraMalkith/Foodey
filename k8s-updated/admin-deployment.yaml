@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin
+  template:
+    metadata:
+      labels:
+        app: admin
+    spec:
+      containers:
+        - name: admin
+          image: admin-service:1.0
+          ports:
+            - containerPort: 3006
+          env:
+            - name: PORT
+              value: "3006"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: mongo-uri
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+spec:
+  selector:
+    app: admin
+  ports:
+    - protocol: TCP
+      port: 3006
+      targetPort: 3006
+      nodePort: 30006
+  type: NodePort

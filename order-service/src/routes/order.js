@@ -10,7 +10,7 @@ router.post('/', auth(['customer']), async (req, res) => {
   try {
     console.log('Placing order with payload:', { ...req.body, items: req.body.items ? `${req.body.items.length} items` : 'No items' });
     
-    const { restaurantId, items, total } = req.body;
+    const { restaurantId, items, total, status, paymentMethod, paymentStatus, deliveryAddress, structuredAddress } = req.body;
     if (!restaurantId || !items || !total) {
       return res.status(400).json({ error: 'All fields are required' });
     }
@@ -49,7 +49,11 @@ router.post('/', auth(['customer']), async (req, res) => {
       restaurantName,
       items: validItems,
       total,
-      status: 'pending',
+      status: status || 'pending',
+      paymentMethod: paymentMethod || 'card',
+      paymentStatus: paymentStatus || 'pending',
+      deliveryAddress: deliveryAddress || '',
+      structuredAddress: structuredAddress || {}
     });
 
     await order.save();
@@ -214,7 +218,7 @@ router.get('/pending-delivery', auth(['admin']), async (req, res) => {
 });
 
 // Confirm order (Admin only)
-router.put('/:id/confirm', auth(['admin']), async (req, res) => {
+router.put('/:id/confirm', auth(['admin', 'customer']), async (req, res) => {
   try {
     const { id } = req.params;
     const { deliveryAddress, customerEmail, structuredAddress } = req.body;
@@ -290,87 +294,29 @@ router.put('/:id/confirm', auth(['admin']), async (req, res) => {
 });
 
 // Update order when delivery is assigned
-router.put('/:id/assign-delivery', auth(['admin']), async (req, res) => {
+router.put('/:id/assign-delivery', auth(['admin', 'service', 'delivery_personnel']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { driverId, customerEmail, deliveryPerson, eta } = req.body;
     
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
     
-    // Check if already assigned to avoid duplicate assignments
-    if (order.deliveryAssigned) {
-      console.log(`Order ${id} is already assigned for delivery, no update needed`);
-      return res.json({ 
-        message: 'Order already assigned for delivery', 
-        order,
-        deliveryAssigned: true 
-      });
-    }
-    
-    // Mark the order as having delivery assigned
+    // Mark delivery as assigned and update status
     order.deliveryAssigned = true;
     order.status = 'out_for_delivery';
     await order.save();
     
-    console.log(`Order ${id} successfully marked as assigned for delivery`);
+    console.log(`Order ${id} marked as assigned for delivery and status updated to out_for_delivery`);
     
-    
-    // Send delivery notification to customer
-    try {
-      // Use provided email or fetch from user service
-      let emailToUse = customerEmail;
-      
-      if (!emailToUse) {
-        // Fetch user email from user service
-        try {
-          const userResponse = await axios.get(
-            `${process.env.USER_SERVICE_URL || 'http://localhost:3001'}/api/users/${order.userId}/email`,
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.NOTIFICATION_SERVICE_TOKEN}`
-              }
-            }
-          );
-          
-          if (userResponse.data && userResponse.data.email) {
-            emailToUse = userResponse.data.email;
-            console.log(`Retrieved email ${emailToUse} for user ${order.userId}`);
-          }
-        } catch (userServiceError) {
-          console.error('Failed to fetch user email from user service:', userServiceError.message);
-        }
-      }
-      
-      if (emailToUse) {
-        await notificationService.sendDeliveryNotification(id, emailToUse, {
-          deliveryPerson,
-          eta,
-          phoneNumber: req.body.phoneNumber
-        });
-        console.log(`Order delivery email sent to ${emailToUse} for order ${id}`);
-      } else {
-        console.warn(`No email available for order ${id}, delivery notification not sent`);
-      }
-    } catch (notificationError) {
-      console.error('Failed to send delivery notification email:', notificationError);
-      // Continue with the response even if notification fails
-    }
-    
-    // Notify driver if driver ID is provided
-    if (driverId) {
-      try {
-        await notificationService.sendDriverAssignmentNotification(id, driverId);
-      } catch (driverNotificationError) {
-        console.error('Failed to send driver notification:', driverNotificationError);
-        // Continue with the response even if driver notification fails
-      }
-    }
-    
-    res.json({ message: 'Order updated with delivery assignment', order });
+    res.json({ 
+      success: true, 
+      message: 'Order marked as assigned for delivery',
+      order
+    });
   } catch (error) {
+    console.error('Error assigning delivery to order:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -409,8 +355,8 @@ router.delete('/customer/:id', auth(['customer']), async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized: You can only delete your own orders' });
     }
     
-    // Only allow deletion of pending orders
-    if (order.status !== 'pending') {
+    // Only allow deletion of pending or pending_payment orders
+    if (!['pending', 'pending_payment'].includes(order.status)) {
       return res.status(400).json({ error: 'Cannot delete orders that are already confirmed or in delivery' });
     }
     
@@ -503,32 +449,78 @@ router.put('/:id/mark-delivered', auth(['delivery_personnel']), async (req, res)
     
     // Send delivery completion notification to customer if not already sent
     try {
-      // Get user email
-      const token = `Bearer ${process.env.JWT_SECRET}`;
-      const userResponse = await axios.get(
-        `${process.env.USER_SERVICE_URL || 'http://user-service:3001'}/api/users/${order.userId}/email`,
-        { headers: { Authorization: token } }
-      );
-      
-      if (userResponse.data && userResponse.data.email) {
-        const customerEmail = userResponse.data.email;
+      // Check if a notification has already been sent (either by this service or delivery service)
+      if (order.notificationSent) {
+        console.log(`Notification already sent for order ${id}, skipping`);
+      } else {
+        // Try to get the delivery record to check if notification was already sent there
+        try {
+          const token = `Bearer ${process.env.JWT_SECRET}`;
+          const deliveryResponse = await axios.get(
+            `${process.env.DELIVERY_SERVICE_URL || 'http://delivery-service:3004'}/api/deliveries/${id}/track`,
+            { headers: { Authorization: token } }
+          );
+          
+          // If delivery exists and notification was already sent, skip sending another one
+          if (deliveryResponse.data && deliveryResponse.data.notificationSent) {
+            console.log(`Delivery notification already sent by delivery service for order ${id}, skipping`);
+            // Update our order record to reflect this
+            order.notificationSent = true;
+            await order.save();
+            return res.json({ 
+              message: 'Order marked as delivered successfully',
+              order
+            });
+          }
+        } catch (deliveryCheckError) {
+          console.log(`Could not check delivery notification status: ${deliveryCheckError.message}`);
+          // Continue to try sending notification if we can't check
+        }
         
-        // Send delivery completion notification
-        await axios.post(
-          `${process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:3005'}/api/notifications/delivery-complete`,
-          {
-            orderId: id,
-            customerEmail,
-            orderDetails: {
-              items: order.items,
-              total: order.total,
-              restaurantName: order.restaurantName
-            }
-          },
+        // Get user email
+        const token = `Bearer ${process.env.JWT_SECRET}`;
+        const userResponse = await axios.get(
+          `${process.env.USER_SERVICE_URL || 'http://user-service:3001'}/api/users/${order.userId}/email`,
           { headers: { Authorization: token } }
         );
         
-        console.log(`Delivery completion notification sent to ${customerEmail} for order ${id}`);
+        if (userResponse.data && userResponse.data.email) {
+          const customerEmail = userResponse.data.email;
+          
+          // Send delivery completion notification
+          await axios.post(
+            `${process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:3005'}/api/notifications/delivery-complete`,
+            {
+              orderId: id,
+              customerEmail,
+              orderDetails: {
+                items: order.items,
+                total: order.total,
+                restaurantName: order.restaurantName
+              }
+            },
+            { headers: { Authorization: token } }
+          );
+          
+          console.log(`Delivery completion notification sent to ${customerEmail} for order ${id}`);
+          
+          // Mark that we've sent a notification
+          order.notificationSent = true;
+          await order.save();
+          
+          // Also inform the delivery service that we've sent a notification
+          try {
+            await axios.put(
+              `${process.env.DELIVERY_SERVICE_URL || 'http://delivery-service:3004'}/api/deliveries/${id}/notification-sent`,
+              { notificationSent: true },
+              { headers: { Authorization: token } }
+            );
+            console.log(`Updated delivery service that notification was sent for order ${id}`);
+          } catch (deliveryUpdateError) {
+            console.error(`Failed to update delivery service about notification status: ${deliveryUpdateError.message}`);
+            // Continue even if this update fails
+          }
+        }
       }
     } catch (notificationError) {
       console.error('Error sending delivery completion notification:', notificationError);
@@ -542,6 +534,98 @@ router.put('/:id/mark-delivered', auth(['delivery_personnel']), async (req, res)
   } catch (error) {
     console.error('Error marking order as delivered:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update order status (Customer or Admin)
+router.post('/:id/update-status', auth(['customer', 'admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, paymentStatus } = req.body;
+    
+    if (!status && !paymentStatus) {
+      return res.status(400).json({ error: 'Status or paymentStatus is required' });
+    }
+    
+    // Valid status values
+    if (status) {
+      const validStatuses = ['pending', 'pending_payment', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Invalid status value' });
+      }
+    }
+    
+    // Valid payment status values
+    if (paymentStatus) {
+      const validPaymentStatuses = ['pending', 'completed', 'failed', 'refunded'];
+      if (!validPaymentStatuses.includes(paymentStatus)) {
+        return res.status(400).json({ error: 'Invalid payment status value' });
+      }
+    }
+    
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    // Check authorization - only allow the customer who placed the order or an admin to update it
+    if (req.user.role !== 'admin' && order.userId !== req.user.userId) {
+      return res.status(403).json({ error: 'Unauthorized to update this order' });
+    }
+    
+    // Update the order status if provided
+    if (status) {
+      order.status = status;
+    }
+    
+    // Update the payment status if provided
+    if (paymentStatus) {
+      order.paymentStatus = paymentStatus;
+    }
+    
+    await order.save();
+    
+    console.log(`Order ${id} updated: ${status ? 'status=' + status : ''} ${paymentStatus ? 'paymentStatus=' + paymentStatus : ''}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Order updated successfully',
+      order
+    });
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    res.status(500).json({ error: 'Server error', message: error.message });
+  }
+});
+
+// Update notification status (Service-to-service communication)
+router.put('/:id/update-notification-status', auth(['admin', 'service']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notificationSent } = req.body;
+    
+    if (notificationSent === undefined) {
+      return res.status(400).json({ error: 'notificationSent field is required' });
+    }
+    
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    // Update the order with notification status
+    order.notificationSent = notificationSent;
+    await order.save();
+    
+    console.log(`Order ${id} notification status updated to: ${notificationSent}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Order notification status updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating order notification status:', error);
+    res.status(500).json({ error: 'Server error', message: error.message });
   }
 });
 

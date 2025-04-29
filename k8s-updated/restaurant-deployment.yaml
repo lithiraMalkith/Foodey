@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurant-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restaurant
+  template:
+    metadata:
+      labels:
+        app: restaurant
+    spec:
+      containers:
+        - name: restaurant
+          image: restaurant-service:1.0
+          ports:
+            - containerPort: 3003
+          env:
+            - name: PORT
+              value: "3003"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: mongo-uri
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: restaurant-service
+spec:
+  selector:
+    app: restaurant
+  ports:
+    - protocol: TCP
+      port: 3003
+      targetPort: 3003
+      nodePort: 30003
+  type: NodePort

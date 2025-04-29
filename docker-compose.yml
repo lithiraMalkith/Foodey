@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   user-service:
     build: ./user-service
@@ -24,6 +23,7 @@ services:
       # Service URLs (use container names for Docker networking)
       - USER_SERVICE_URL=http://user-service:3001
       - NOTIFICATION_SERVICE_URL=http://notification-service:3005
+      - PAYMENT_SERVICE_URL=http://payment-service:3007
       # Service tokens
       - NOTIFICATION_SERVICE_TOKEN=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
     depends_on:
@@ -98,6 +98,22 @@ services:
     networks:
       - app-network
 
+  payment-service:
+    build: ./payment-service
+    ports:
+      - "3007:3007"
+    environment:
+      - PORT=3007
+      - MONGO_URI=mongodb+srv://lithira:2001@first.uyayw.mongodb.net/
+      - JWT_SECRET=9177cfbb3a677a1305123a99297a000a2b1edb3a1a53a0866c0566ca09a3ececb7b04f31a53e21bf334adf58b5e24d58a7802b8e843306b3739749531c2f12a6
+      - STRIPE_SECRET_KEY=sk_test_51RIzREH4SbeQQ6uy6HGYLUZfaAoKEP1AfiepswYRAQloyAz8J0umEnm2A16C5uoyfermUPBSykTRowMofQ0wUlXg00QbxkF0Hq
+      - ORDER_SERVICE_URL=http://order-service:3002
+      - USER_SERVICE_URL=http://user-service:3001
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
   frontend:
     build: ./frontend
     ports:
@@ -109,6 +125,7 @@ services:
       - REACT_APP_DELIVERY_API_URL=http://localhost:3004
       - REACT_APP_NOTIFICATION_API_URL=http://localhost:3005
       - REACT_APP_ADMIN_API_URL=http://localhost:3006
+      - REACT_APP_PAYMENT_API_URL=http://localhost:3007
     depends_on:
       - user-service
       - order-service
@@ -116,6 +133,7 @@ services:
       - delivery-service
       - notification-service
       - admin-service
+      - payment-service
     networks:
       - app-network
     extra_hosts:

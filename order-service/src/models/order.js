@@ -8,8 +8,18 @@ const orderSchema = new mongoose.Schema({
   total: { type: Number, required: true },
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'],
+    enum: ['pending', 'pending_payment', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'],
     default: 'pending',
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['card', 'cash_on_delivery'],
+    default: 'card'
+  },
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'completed', 'failed', 'refunded'],
+    default: 'pending'
   },
   deliveryAssigned: { type: Boolean, default: false },
   deliveryAddress: { type: String },
@@ -19,6 +29,7 @@ const orderSchema = new mongoose.Schema({
     state: { type: String },
     zipCode: { type: String }
   },
+  notificationSent: { type: Boolean, default: false }, // Track if delivery notification was sent
   createdAt: { type: Date, default: Date.now },
 });
 
